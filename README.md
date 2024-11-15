@@ -1,6 +1,6 @@
 # FFmpeg build
 
-Build FFmpeg in a container based on Debian.
+Build FFmpeg as static binary with no external dependencies a container based on Debian.
 
 ## How to build/create container
 

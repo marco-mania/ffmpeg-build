@@ -2,34 +2,42 @@
 
 function execute() {
     echo "$ $*"
-    OUTPUT=$("$@" 2>&1)
+    local output=$("$@" 2>&1)
     if [ $? -ne 0 ]; then
-        echo "$OUTPUT"
+        echo "$output"
         echo ""
         echo "ERROR: Failed to execute $* in dir $(pwd)" >&2
         exit 1
     fi
 }
 
+function get_filename_from_url() {
+    local url="$1"
+    echo "${url##*/}"
+}
+
+function get_directoryname_from_tar() {
+    local filename="$1"
+    echo $(tar -tf "$filename" | grep -o '^[^/]*' | sort -u)
+}
+
 function download() {
     url="$1"
-    filename="${url##*/}"
+    filename="$(get_filename_from_url $url)"
     if [ -f $filename ]; then
-        echo $(tar -tf "$filename" | grep -o '^[^/]*' | sort -u)
-        return 0
+        return 4
     fi
-    wget -q "$url"
+    wget -q --show-progress "$url"
     if [ $? -ne 0 ]; then
-        echo "ERROR: Failed to download $url" >&2
-        exit 1
+        return 1
     fi
     tar xf "$filename"
     if [ $? -ne 0 ]; then
-        echo "ERROR: Failed to extract $filename" >&2
-        exit 1
+        #echo "ERROR: Failed to extract $filename" >&2
+        return 2
+        #exit 1
     fi
-    # return the (main) directory name in the tar archive
-    echo $(tar -tf "$filename" | grep -o '^[^/]*' | sort -u)
+    return 0
 }
 
 function download_from_git() {
@@ -37,24 +45,23 @@ function download_from_git() {
     reponame="$(basename -s .git $url)"
     if [ -d $reponame ]; then
         echo $reponame
-        return 0
+        return 4
     fi
     git clone "$url"
     if [ $? -ne 0 ]; then
-        echo "ERROR: Failed to clone $url" >&2
-        exit 1
+        return 1
+        #echo "ERROR: Failed to clone $url" >&2
+        #exit 1
     fi
-    echo $reponame
+    return 0
 }
 
 jflag=
-jval=2
-ffmpeg_version="7.1"
+nproc=2
 while getopts j:v: flag
 do
     case "${flag}" in
-        j) jflag=1; jval="$OPTARG";;
-        v) ffmpeg_version="$OPTARG";;
+        j) jflag=1; nproc="$OPTARG";;
         :) echo "ERROR: Option -${OPTARG} requires an argument"; exit 1;;
         ?) echo "ERROR: Invalid option: -${OPTARG}"; exit 1;;
     esac
@@ -66,8 +73,8 @@ LIB_DIR=$TARGET_DIR/lib
 TMP_DIR=/tmp
 
 function build_zlib() {
-    [ ! -f config.status ] && execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
+    [ ! -f config.status ] && execute ./configure --prefix=$TARGET_DIR --static
+    execute make -j $nproc
     execute sudo make install
 }
 
@@ -75,8 +82,10 @@ function build_zstd() {
     export CFLAGS+=' -ffat-lto-objects'
     export CXXFLAGS+=' -ffat-lto-objects'
     execute cmake -S build/cmake -B build -G Ninja \
+    -DENABLE_SHARED=OFF \
     -DCMAKE_BUILD_TYPE=None \
     -DCMAKE_INSTALL_PREFIX=$TARGET_DIR \
+    -DBUILD_SHARED_LIBS=OFF \
     -DZSTD_ZLIB_SUPPORT=OFF \
     -DZSTD_LZMA_SUPPORT=OFF \
     -DZSTD_LZ4_SUPPORT=OFF \
@@ -88,38 +97,38 @@ function build_zstd() {
 }
 
 function build_vo-amrwbenc() {
-    execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
+    execute ./configure --prefix=$TARGET_DIR --enable-static --disable-shared
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_opencore-amr() {
-    execute ./configure --prefix=$TARGET_DIR --disable-examples
+    execute ./configure --prefix=$TARGET_DIR --disable-examples --enable-static --disable-shared
     execute make
     execute sudo make install
 }
 
 function build_yasm() {
     [ ! -f config.status ] && execute ./configure --prefix=$TARGET_DIR --bindir=$BIN_DIR
-    execute make -j $jval
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_nasm() {
     [ ! -f config.status ] && execute ./configure --prefix=$TARGET_DIR --bindir=$BIN_DIR
-    execute make -j $jval
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_openssl() {
-    PATH="$BIN_DIR:$PATH" execute ./Configure --prefix=$TARGET_DIR --libdir=$TARGET_DIR/lib
-    PATH="$BIN_DIR:$PATH" execute make -j $jval
+    PATH="$BIN_DIR:$PATH" execute ./Configure --prefix=$TARGET_DIR --libdir=$TARGET_DIR/lib no-docs no-shared no-pinshared no-module no-pic no-dso no-dynamic-engine -static --static
+    PATH="$BIN_DIR:$PATH" execute make -j $nproc
     execute sudo make install_sw
 }
 
 function build_x264() {
-    [ ! -f config.status ] && PATH="$BIN_DIR:$PATH" execute ./configure --prefix=$TARGET_DIR --disable-opencl --enable-pic --enable-shared
-    PATH="$BIN_DIR:$PATH" execute make -j $jval
+    [ ! -f config.status ] && PATH="$BIN_DIR:$PATH" execute ./configure --prefix=$TARGET_DIR --disable-opencl --enable-pic --enable-static --disable-cli --disable-lavf --disable-swscale
+    PATH="$BIN_DIR:$PATH" execute make -j $nproc
     execute sudo make install
 }
 
@@ -132,7 +141,8 @@ function build_x265() {
     -DMAIN12=TRUE \
     -DEXPORT_C_API=FALSE \
     -DENABLE_CLI=FALSE \
-    -DENABLE_SHARED=TRUE \
+    -DENABLE_SHARED=FALSE \
+    -DCMAKE_BUILD_TYPE=Release \
     -Wno-dev
     execute sed -i 's/-lgcc_s/-lgcc_eh/g' build-12/x265.pc
     execute ninja -C build-12
@@ -142,17 +152,19 @@ function build_x265() {
     -DHIGH_BIT_DEPTH=TRUE \
     -DEXPORT_C_API=FALSE \
     -DENABLE_CLI=FALSE \
-    -DENABLE_SHARED=TRUE \
+    -DENABLE_SHARED=FALSE \
+    -DCMAKE_BUILD_TYPE=Release \
     -Wno-dev
     execute sed -i 's/-lgcc_s/-lgcc_eh/g' build-10/x265.pc
     execute ninja -C build-10
 
     execute cmake -B build -G Ninja \
     -DCMAKE_INSTALL_PREFIX=$TARGET_DIR \
-    -DENABLE_SHARED=TRUE \
+    -DENABLE_SHARED=FALSE \
     -DENABLE_HDR10_PLUS=TRUE \
     -DLINKED_10BIT=TRUE \
     -DLINKED_12BIT=TRUE \
+    -DCMAKE_BUILD_TYPE=Release \
     -Wno-dev
     execute sed -i 's/-lgcc_s/-lgcc_eh/g' build/x265.pc
     execute ninja -C build
@@ -162,182 +174,188 @@ function build_x265() {
 
 function build_fdk-aac() {
     execute autoreconf -fiv
-    [ ! -f config.status ] && execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
+    [ ! -f config.status ] && execute ./configure --prefix=$TARGET_DIR --enable-static --disable-shared
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_libpng() {
-    CPPFLAGS="-I$TARGET_DIR/include" LDFLAGS="-L$TARGET_DIR/lib" execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval check
+    CPPFLAGS="-I$TARGET_DIR/include" LDFLAGS="-L$TARGET_DIR/lib" execute ./configure --prefix=$TARGET_DIR --enable-static --disable-shared
+    execute make -j $nproc check
     execute sudo make install
 }
 
 function build_harfbuzz() {
-    execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
+    execute ./configure --prefix=$TARGET_DIR --enable-static --disable-shared
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_freetype() {
-    execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
+    execute ./configure --prefix=$TARGET_DIR --enable-static --disable-shared
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_fontconfig() {
-    execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
+    execute ./configure --prefix=$TARGET_DIR --enable-static --disable-shared
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_fribidi() {
     execute ./autogen.sh
-    execute ./configure --prefix=$TARGET_DIR --disable-debug --disable-deprecated
+    execute ./configure --prefix=$TARGET_DIR --disable-debug --disable-deprecated --enable-static --disable-shared
     execute make
     execute sudo make install
 }
 
 function build_libass() {
-    execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
+    execute ./configure --prefix=$TARGET_DIR --enable-static --disable-shared
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_mp3lame() {
-    [ ! -f config.status ] && execute ./configure --prefix=$TARGET_DIR --enable-nasm $lame_build_target
+    [ ! -f config.status ] && execute ./configure --prefix=$TARGET_DIR --disable-shared --enable-static --enable-nasm --disable-gtktest --disable-cpml --disable-frontend
     execute make
     execute sudo make install
 }
 
 function build_opus() {
-    [ ! -f config.status ] && execute ./configure --prefix=$TARGET_DIR
+    [ ! -f config.status ] && execute ./configure --prefix=$TARGET_DIR --enable-static --disable-shared --disable-extra-programs --disable-doc
     execute make
     execute sudo make install
 }
 
 function build_libvpx() {
-    [ ! -f config.status ] && PATH="$BIN_DIR:$PATH" execute ./configure --prefix=$TARGET_DIR --disable-examples --disable-unit-tests --enable-pic
-    PATH="$BIN_DIR:$PATH" execute make -j $jval
+    [ ! -f config.status ] && PATH="$BIN_DIR:$PATH" execute ./configure --prefix=$TARGET_DIR --enable-static --enable-vp9-highbitdepth --disable-shared --disable-unit-tests --disable-examples
+    PATH="$BIN_DIR:$PATH" execute make -j $nproc
     execute sudo make install
 }
 
 function build_rtmpdump() {
-    execute make -j $jval
-    execute sudo make install prefix=$TARGET_DIR
+    execute make SYS=posix SHARED=off -j $nproc
+    execute sudo make SYS=posix SHARED=off install
 }
 
 function build_soxr() {
-    PATH="$BIN_DIR:$PATH" execute cmake -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX=$TARGET_DIR -DWITH_OPENMP:bool=off -DBUILD_TESTS:bool=off
-    execute make -j $jval
+    PATH="$BIN_DIR:$PATH" execute cmake -G"Unix Makefiles" -DCMAKE_INSTALL_PREFIX=$TARGET_DIR -DCMAKE_INSTALL_PREFIX=$TARGET_DIR -DWITH_OPENMP:bool=false -DBUILD_TESTS:bool=false -DBUILD_SHARED_LIBS:bool=false -DWITH_OPENMP:bool=false
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_libvidstab() {
-    PATH="$BIN_DIR:$PATH" execute cmake -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX=$TARGET_DIR
-    execute make -j $jval
+    sed -i "s/vidstab SHARED/vidstab STATIC/" ./CMakeLists.txt
+    PATH="$BIN_DIR:$PATH" execute cmake -G"Unix Makefiles" -DCMAKE_INSTALL_PREFIX=$TARGET_DIR -DCMAKE_VERBOSE_MAKEFILE=ON -DCMAKE_SYSTEM_ARCH=$(arch) -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DUSE_OMP=ON
+    execute make -j $nproc
     execute sudo make install
+    #echo "Libs.private: -ldl" | sudo tee /usr/local/lib/pkgconfig/vidstab.pc
 }
 
 function build_openjpeg() {
-    PATH="$BIN_DIR:$PATH" execute cmake -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX=$TARGET_DIR
-    execute make -j $jval
+    PATH="$BIN_DIR:$PATH" execute cmake -G"Unix Makefiles" -DCMAKE_INSTALL_PREFIX=$TARGET_DIR -DCMAKE_VERBOSE_MAKEFILE=ON -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_PKGCONFIG_FILES=ON -DBUILD_CODEC=OFF -DWITH_ASTYLE=OFF -DBUILD_TESTING=OFF
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_zimg() {
     execute ./autogen.sh
-    execute ./configure --prefix=$TARGET_DIR
+    execute ./configure --prefix=$TARGET_DIR --enable-static --disable-shared
     sed -i 's/size_t/std::size_t/g' src/zimg/colorspace/matrix3.cpp
-    execute make -j $jval
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_libwebp() {
     execute ./autogen.sh
-    execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
+    execute ./configure --prefix=$TARGET_DIR --disable-shared --enable-static --with-pic --enable-libwebpmux --disable-libwebpextras --disable-libwebpdemux --disable-sdl --disable-gl --disable-png --disable-jpeg --disable-tiff --disable-gif
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_libogg() {
-    execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
+    execute ./configure --prefix=$TARGET_DIR --enable-static --disable-shared
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_libvorbis() {
     chmod 755 configure
-    execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
+    execute ./configure --prefix=$TARGET_DIR --enable-static --disable-shared --disable-oggtest
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_speex() {
     execute ./autogen.sh
-    execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
-    execute sudo make install
-}
-
-function build_libsdl() {
-    execute ./autogen.sh
-    execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
+    execute ./configure --prefix=$TARGET_DIR --enable-static --disable-shared
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_srt() {
     mkdir -p build
     cd build
-    execute cmake -DENABLE_APPS=OFF -DCMAKE_INSTALL_PREFIX=$TARGET_DIR -DENABLE_C_DEPS=ON ..
-    sed -i 's/-lgcc_s/-lgcc_eh/g' haisrt.pc
-    sed -i 's/-lgcc_s/-lgcc_eh/g' srt.pc
-    execute make -j $jval
+    execute cmake -G"Unix Makefiles" -DCMAKE_INSTALL_PREFIX=$TARGET_DIR -DCMAKE_BUILD_TYPE=Release -DENABLE_SHARED=OFF -DENABLE_APPS=OFF -DENABLE_CXX11=ON -DUSE_STATIC_LIBSTDCXX=ON -DOPENSSL_USE_STATIC_LIBS=ON -DENABLE_LOGGING=OFF -DENABLE_C_DEPS=ON ..
+    execute sed -i 's/-lgcc_s/-lgcc_eh/g' haisrt.pc
+    execute sed -i 's/-lgcc_s/-lgcc_eh/g' srt.pc
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_librist() {
     mkdir -p build
     cd build
-    execute meson .. --prefix=$TARGET_DIR --bindir="../bin/" --libdir="$TARGET_DIR/lib"
+    execute meson --default-library=static .. --prefix=$TARGET_DIR --bindir="../bin/" --libdir="$TARGET_DIR/lib"
     execute ninja
     execute sudo ninja install
 }
 
 function build_theora() {
     execute ./autogen.sh
-    execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
+    execute ./configure --prefix=$TARGET_DIR --build=$(arch)-unknown-linux-gnu --disable-examples --disable-oggtest --disable-shared --enable-static
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_xvid() {
     cd build/generic
-    execute ./configure --prefix=$TARGET_DIR
-    execute make -j $jval
+    CFLAGS="$CFLAGS -fstrength-reduce -ffast-math" execute ./configure --prefix=$TARGET_DIR
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_dav1d() {
-    execute meson build --prefix=$TARGET_DIR --buildtype=release --libdir=$LIB_DIR
+    execute meson setup build --prefix=$TARGET_DIR -Dbuildtype=release -Ddefault_library=static --libdir=$LIB_DIR
     execute ninja -C build
     execute sudo ninja -C build install
 }
 
 function build_svt-av1() {
-    execute cmake -DCMAKE_INSTALL_PREFIX=$TARGET_DIR -G"Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
-    execute make -j $jval
+    execute cmake -DCMAKE_INSTALL_PREFIX=$TARGET_DIR -G"Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DENABLE_AVX512=ON
+    execute make -j $nproc
     execute sudo make install
 }
 
 function build_frei0r() {
-    execute cmake -B build -G Ninja -D CMAKE_INSTALL_PREFIX=$TARGET_DIR
+    execute cmake -B build -G Ninja -DCMAKE_INSTALL_PREFIX=$TARGET_DIR -DENABLE_SHARED=OFF
     execute cmake --build build
     execute sudo cmake --install build
 }
 
+function build_twolame() {
+    execute ./configure --prefix=$TARGET_DIR --disable-sndfile --with-pic
+    execute make -j $nproc
+    execute sudo make install
+}
+
 # YAML_DEPS_FILE from Containerfile
+
+YELLOW='\033[0;33m'
+LIGHT_RED='\033[1;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
 
 c=$(yq '.deps | keys[]' $YAML_DEPS_FILE | wc -l)
 
@@ -348,36 +366,78 @@ for i in $(yq '.deps | keys[]' $YAML_DEPS_FILE); do
     pkg_name=$(yq -r ".deps[$i].name" $YAML_DEPS_FILE)
     pkg_url=$(yq -r ".deps[$i].url" $YAML_DEPS_FILE)
     pkg_from_git=$(yq -r ".deps[$i].from_git" $YAML_DEPS_FILE)
+
+    echo -e "${GREEN}[$j/$c] Process ${pkg_name}...${NC}"
+
     if [ "$pkg_from_git" == "true" ]; then
-        echo "[Dep $j/$c] Cloning ${pkg_url}..."
-        pkg_build_root=$(download_from_git "${pkg_url}")
-        echo "[Dep $j/$c] Clone finished"
+
+        pkg_reponame=$(basename -s .git ${pkg_url})
+        download_from_git "${pkg_url}"
+        if [ $? -eq 1 ]; then
+            echo -e "${LIGHT_RED}ERROR: Failed to clone ${pkg_url}${NC}" >&2
+            exit 1
+        fi
+
+        pkg_build_root=${pkg_reponame}
+
     else
-        echo "[Dep $j/$c] Downloading ${pkg_url}..."
-        pkg_build_root=$(download "${pkg_url}")
-        echo "[Dep $j/$c] Download finished"
+
+        pkg_filename=$(get_filename_from_url "${pkg_url}")
+        download "${pkg_url}"
+        if [ $? -eq 1 ]; then
+            echo -e "${LIGHT_RED}ERROR: Failed to download ${pkg_url}${NC}" >&2
+            exit 1
+        elif [ $? -eq 2 ]; then
+            echo -e "${LIGHT_RED}ERROR: Failed to extract ${pkg_filename}${NC}" >&2
+            exit 1
+        elif [ $? -eq 4 ]; then
+            echo -e "${YELLOW}Skip download ${pkg_url}, already been downloaded${NC}"
+        fi
+
+        pkg_build_root=$(get_directoryname_from_tar ${pkg_filename})
+
     fi
+
     if [ ! -f $TMP_DIR/${pkg_name}.build-flag ]; then
         (
-            echo "[Dep $j/$c] Building ${pkg_name}..."
+            echo -e "${GREEN}Building ${pkg_name}...${NC}"
             cd ${pkg_build_root}
             eval build_${pkg_name}
             touch $TMP_DIR/${pkg_name}.build-flag
-            echo "[Dep $j/$c] Build finished"
+            echo -e "${GREEN}Building ${pkg_name} finished${NC}"
         ) || exit 1
+    else
+        echo -e "${YELLOW}Skip build ${pkg_name}, already been built${NC}"
     fi
 
 done
 
-pkg_ffmpeg_dir=$(download "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n7.1.tar.gz")
+ffmpeg_url="https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n7.1.tar.gz"
+download "${ffmpeg_url}"
+if [ $? -eq 1 ]; then
+    echo "ERROR: Failed to download ${ffmpeg_url}" >&2
+    exit 1
+elif [ $? -eq 2 ]; then
+    echo "ERROR: Failed to extract $(get_filename_from_url ${ffmpeg_url})" >&2
+    exit 1
+fi
 
-cd $pkg_ffmpeg_dir
+cd "$(get_directoryname_from_tar $(get_filename_from_url ${ffmpeg_url}))"
 
 echo "*** Building FFmpeg ***"
 
-[ ! -f config.status ] && PATH="$BIN_DIR:$PATH" \
-  PKG_CONFIG_PATH="$TARGET_DIR/lib/pkgconfig" execute ./configure \
-  --enable-shared \
+#sed -i 's/add_ldexeflags -fPIE -pie/add_ldexeflags -fPIE -static-pie/' configure
+
+[ ! -f config.status ] && execute ./configure \
+  --extra-cflags="-I$TARGET_DIR/include -static -static-libgcc -static-libstdc++" \
+  --extra-ldexeflags="-static -static-libgcc -static-libstdc++" \
+  --extra-ldflags="-L$LIB_DIR" \
+  --extra-libs="-ldl -lpthread -lm -lz" \
+  --pkgconfigdir=$TARGET_DIR/lib/pkgconfig \
+  --pkg-config-flags="--static" \
+  --prefix=$TARGET_DIR \
+  --extra-version= \
+  --enable-static \
   --enable-nonfree \
   --enable-fontconfig \
   --enable-gpl \
@@ -406,29 +466,28 @@ echo "*** Building FFmpeg ***"
   --enable-libopenjpeg \
   --enable-libvo-amrwbenc \
   --enable-libass \
-  --disable-debug \
-  --disable-doc \
-  --disable-ffplay \
+  --enable-libtwolame \
+  --enable-runtime-cpudetect \
   --enable-pthreads \
   --enable-small \
   --enable-version3 \
-  --extra-cflags=-I$TARGET_DIR/include \
-  --extra-ldflags="-L$LIB_DIR -L/usr/lib" \
-  --extra-libs="-ldl -lpthread -lm -lz" \
-  --pkgconfigdir=$TARGET_DIR/lib/pkgconfig \
-  --prefix=$TARGET_DIR \
-  --extra-version=
+  --disable-shared \
+  --disable-debug \
+  --disable-doc \
+  --disable-ffplay \
+  --disable-manpages
 
-execute make -j $jval
+execute make -j $nproc
 execute sudo make install
 
 sudo ldconfig
 
 FFMPEG_ROOT_DIR="/ffmpeg_root"
-sudo mkdir -p $FFMPEG_ROOT_DIR/{bin,lib,share}
+#sudo mkdir -p $FFMPEG_ROOT_DIR/{bin,lib,share}
+sudo mkdir -p $FFMPEG_ROOT_DIR/{bin,share}
 sudo cp -r $TARGET_DIR/bin/ffmpeg $FFMPEG_ROOT_DIR/bin/
-ldd $TARGET_DIR/bin/ffmpeg | cut -d ' ' -f 3 | strings | sudo xargs -I R cp R $FFMPEG_ROOT_DIR/lib
-for lib in $FFMPEG_ROOT_DIR/lib/*; do sudo strip --strip-all $lib; done
-for lib in $FFMPEG_ROOT_DIR/lib/*.so.*; do sudo ln -sf "${lib##*/}" "${lib%%.so.*}".so; done
+#ldd $TARGET_DIR/bin/ffmpeg | cut -d ' ' -f 3 | strings | sudo xargs -I R cp R $FFMPEG_ROOT_DIR/lib
+#for lib in $FFMPEG_ROOT_DIR/lib/*; do sudo strip --strip-all $lib; done
+#for lib in $FFMPEG_ROOT_DIR/lib/*.so.*; do sudo ln -sf "${lib##*/}" "${lib%%.so.*}".so; done
 sudo cp -r $TARGET_DIR/share/ffmpeg $FFMPEG_ROOT_DIR/share/
 sudo rm -rf $FFMPEG_ROOT_DIR/share/ffmpeg/examples

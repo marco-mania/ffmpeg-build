@@ -412,7 +412,7 @@ for i in $(yq '.deps | keys[]' $YAML_DEPS_FILE); do
 
 done
 
-ffmpeg_url="https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n7.1.tar.gz"
+ffmpeg_url="https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n7.1.1.tar.gz"
 download "${ffmpeg_url}"
 if [ $? -eq 1 ]; then
     echo "ERROR: Failed to download ${ffmpeg_url}" >&2

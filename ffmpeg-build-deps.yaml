@@ -16,7 +16,7 @@ deps:
   - name: "x264"
     url: "https://code.videolan.org/videolan/x264/-/archive/stable/x264-stable.tar.gz"
   - name: "x265"
-    url: "https://bitbucket.org/multicoreware/x265_git/downloads/x265_4.0.tar.gz"
+    url: "https://bitbucket.org/multicoreware/x265_git/downloads/x265_4.1.tar.gz"
   - name: "fdk-aac"
     url: "https://github.com/mstorsjo/fdk-aac/archive/refs/tags/v2.0.3.tar.gz"
   - name: "libpng"
@@ -36,7 +36,7 @@ deps:
   - name : "opus"
     url: "https://github.com/xiph/opus/releases/download/v1.5.2/opus-1.5.2.tar.gz"
   - name : "libvpx"
-    url: "https://github.com/webmproject/libvpx/archive/refs/tags/v1.15.1.tar.gz"
+    url: "https://github.com/webmproject/libvpx/archive/refs/tags/v1.15.2.tar.gz"
   - name: "rtmpdump"
     url: "git://git.ffmpeg.org/rtmpdump"
     from_git: true

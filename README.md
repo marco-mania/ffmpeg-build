@@ -26,3 +26,11 @@ Now you can safely delete `ffmpeg_root/` and the `ffmpeg-builder` image.
     podman run --rm ffmpeg -codecs
     podman run --rm -v $(pwd):$(pwd) -w $(pwd) ffmpeg
     podman run --rm -it -v $(pwd):$(pwd) -w $(pwd) ffmpeg -i input.mp4 -c:v libx264 -preset medium -crf 22 -profile:v main -c:a libfdk_aac -b:a 192k -f mp4 output.mp4
+
+## Share images
+
+    # On build host:
+    podman save --output ffmpeg.tar ffmpeg
+
+    # On target host:
+    podman load --input ffmpeg.tar

@@ -1,4 +1,4 @@
-FROM docker.io/debian:bookworm as build
+FROM docker.io/debian:trixie as build
 
 RUN set -ex \
     && sed -i -- 's/Types: deb/Types: deb deb-src/g' /etc/apt/sources.list.d/debian.sources \
@@ -34,7 +34,7 @@ USER builder
 WORKDIR /home/builder
 
 
-FROM docker.io/debian:bookworm-slim as release
+FROM docker.io/debian:trixie-slim as release
 
 RUN set -ex \
     && apt-get clean; rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /usr/share/doc/*
